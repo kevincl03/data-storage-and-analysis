@@ -12,3 +12,7 @@ dashboard_output/
 data_lake/streaming/
 data_lake/raw/cdc/
 .env.terraform
+# Credenciales de Google Cloud / BigQuery (contienen private key)
+credenciales_hyperflix_bigquery.json
+*_bigquery_credentials.json
+service_account*.json

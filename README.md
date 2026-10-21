@@ -12,6 +12,12 @@ MongoDB Atlas (read-only)
   raw/ -> processed/ -> curated/ -> BI
 ```
 
+The analytical model built on top of that Data Lake is a star schema in MongoDB Atlas, and the `ETL Pipeline: MongoDB Atlas -> Google BigQuery` section migrates it to the corporate Data Warehouse in Google BigQuery.
+
+```text
+MongoDB Atlas (OLTP + DW)  ->  ETL  ->  Google BigQuery (OLAP)
+```
+
 The real source domain is Hyperflix consumption, not sales. Therefore, the academic `FACT_VENTAS`, `DIM_CLIENTE` and `DIM_PRODUCTO` concepts are mapped without inventing data:
 
 | Academic concept | Hyperflix implementation |
@@ -181,6 +187,105 @@ The fact collection keeps one document per source reproduction and contains only
 The builder is idempotent for full loads: it drops and rebuilds only the four warehouse collections, uses `$merge` with replacement semantics, enables `allowDiskUse=True` on every aggregation, creates analytical indexes and validates fact-to-dimension references before printing success. The fact table keeps only identifiers, foreign keys and the numeric `minutos_reproducidos` measure; descriptive fields remain in dimensions. The current Atlas execution produced 368 time records, 5,000 users, 1,100 content records and 24,005 reproduction facts.
 
 This is a MongoDB dimensional warehouse, separate from the local Parquet Data Lake and from the CDC collections. The warehouse script writes to Atlas by design; review the target database before running a full rebuild.
+
+## ETL Pipeline: MongoDB Atlas -> Google BigQuery
+
+The cloud phase migrates the Hyperflix star schema from the Atlas analytical warehouse into the corporate Data Warehouse hosted in Google BigQuery. It separates the transactional store (MongoDB / OLTP) from the analytical store (BigQuery / OLAP):
+
+```text
+MongoDB Atlas (hyperflix_db)   --Extract-->   Pandas   --Transform-->   BigQuery
+   dim_tiempo         (368)                    typing / cleaning       hyperflix_dw.dim_tiempo
+   dim_usuario      (5,000)                    rules                   hyperflix_dw.dim_usuario
+   dim_contenido    (1,100)                                           hyperflix_dw.dim_contenido
+   fact_visualizaciones (24,005)                                     hyperflix_dw.fact_visualizaciones
+```
+
+Run it with:
+
+```powershell
+python scripts/etl_mongo_to_bigquery.py --dry-run   # extract + transform, no writes
+python scripts/etl_mongo_to_bigquery.py             # full load
+```
+
+The script creates the four destination tables with an explicit canonical schema, loads them with `WRITE_TRUNCATE` (idempotent: re-running never duplicates rows), and then reconciles the Atlas document counts against the BigQuery row counts plus the fact-to-dimension referential integrity.
+
+### Configuration
+
+The pipeline reads everything from `.env`; no credential is hardcoded in the script.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `MONGO_URI` | required | Atlas connection string of the source warehouse. |
+| `MONGO_DB_NAME` | `hyperflix_db` | Source database. |
+| `GOOGLE_APPLICATION_CREDENTIALS` | `./credenciales_hyperflix_bigquery.json` | Service account JSON used for Application Default Credentials. |
+| `BIGQUERY_PROJECT_ID` | read from the credentials file | Target GCP project. |
+| `BIGQUERY_DATASET_ID` | `hyperflix_dw` | Target dataset. |
+| `BIGQUERY_LOCATION` | `US` | Location used if the dataset has to be created. |
+| `ETL_BATCH_SIZE` | `1000` | Cursor batch size used during extraction. |
+| `ETL_WRITE_DISPOSITION` | `WRITE_TRUNCATE` | `WRITE_TRUNCATE`, `WRITE_APPEND` or `WRITE_EMPTY`. |
+| `ETL_FACT_PARTITIONING` | `false` | Enables date-range partitioning of the fact table. See the sandbox limitation below. |
+
+The service account (`hyperflix-etl@hyperflix-512315.iam.gserviceaccount.com`) needs the **BigQuery Data Editor** role on the dataset and **BigQuery Job User** on the project. The credentials file is a private key and is ignored by Git.
+
+### Type mapping
+
+BigQuery is strict about types, so the transformation phase applies explicit rules instead of relying on inference:
+
+| MongoDB (BSON) | BigQuery | Rule |
+| --- | --- | --- |
+| `ObjectId` (`_id`, `usuario_id`, `contenido_id`, `suscripcion_id`, `visualizacion_id`) | `STRING` | Serialized to its 24-character hex representation. |
+| `{"ifNull": [value, default]}` | `INTEGER` | The MongoDB builder writes `{"ifNull": [...]}` inside a `$project`, which MongoDB stores as a literal subdocument instead of applying the `$ifNull` operator. The ETL unwraps it, so `dim_usuario.total_pagado` and `pagos_completados` arrive as numbers. |
+| `trimestre` (`3.0`, float) | `INTEGER` | Cast from the `$ceil` of a division. |
+| `generos` (array of strings) | `ARRAY<STRING>` | Normalized to a list of strings, empty for TV channels. |
+| `categoria`, `anio_lanzamiento`, `duracion_minutos` (`null` for TV channels) | `STRING` / `INTEGER` | Kept nullable, never coerced to empty or zero. |
+| `fecha`, `fecha_registro` (BSON date) | `TIMESTAMP` (UTC) | Cast with `utc=True` so no timestamp is shifted. |
+| `activo`, `disponible`, `es_fin_de_semana` | `BOOLEAN` | Cast to the nullable `boolean` dtype. |
+
+`dim_tiempo` is the only table whose `_id` is the business key itself (`fecha_id`), so both are unified into a single `STRING` column.
+
+### Destination model
+
+```text
+hyperflix_dw.dim_usuario           (5,000)   clustering: pais
+hyperflix_dw.dim_contenido         (1,100)   clustering: content_type   (generos: ARRAY<STRING>)
+hyperflix_dw.dim_tiempo              (368)   clustering: anio
+hyperflix_dw.fact_visualizaciones (24,005)   clustering: usuario_id, contenido_id
+```
+
+`fact_visualizaciones` keeps only keys, foreign keys and the `minutos_reproducidos` measure. The `fecha` column is derived from `dim_tiempo` with a 1:1 join on `fecha_id`; it does not change the grain of the fact and is the column used for range partitioning when it is enabled. As in the MongoDB warehouse, subscription payments are never attributed to an individual reproduction: `dim_usuario.total_pagado` remains a per-subscriber aggregate.
+
+The legacy `reproducciones_analitica` collection is intentionally **not** migrated. It is the flat OLAP view of the previous phase, it was replaced by the star schema, and loading it would duplicate the fact table and break the dimensional integrity.
+
+### BigQuery sandbox limitation: partition expiration
+
+The GCP project used by Hyperflix runs on the BigQuery free tier (sandbox mode, billing disabled). In that mode BigQuery applies an **automatic 60-day partition expiration** when a partitioned table is created, and it also rejects any table update (`PATCH`), so the layout cannot be corrected afterwards.
+
+The reproduction history of Hyperflix spans 368 days, so an expired partitioned fact table would silently keep only the last 60 days of data (1,240 of 24,005 rows in the observed run). The pipeline therefore:
+
+- keeps the fact table **unpartitioned by default** (`ETL_FACT_PARTITIONING=false`), which preserves the complete history;
+- reconciles the row counts after every load, so any row loss is detected and reported instead of passing unnoticed;
+- degrades gracefully when a table update is rejected: the physical layout is a warning, not a pipeline failure.
+
+With billing enabled, set `ETL_FACT_PARTITIONING=true` and run once with `--recreate-tables` to obtain the partitioned layout. Clustering is always applied because it never drops data.
+
+### Command line options
+
+```powershell
+python scripts/etl_mongo_to_bigquery.py --only dim_usuario,dim_contenido
+python scripts/etl_mongo_to_bigquery.py --write-disposition WRITE_APPEND
+python scripts/etl_mongo_to_bigquery.py --recreate-tables   # drop and recreate the destination tables
+python scripts/etl_mongo_to_bigquery.py --log-level DEBUG
+```
+
+`--dry-run` performs the full extraction and transformation without contacting BigQuery, which is the fastest way to validate a change in the typing rules.
+
+### Tests
+
+```powershell
+python -m unittest tests.test_etl_bigquery -v
+```
+
+The suite covers the transformation rules, the null handling, the schema/column agreement between the DataFrame and the BigQuery schema, the idempotent write disposition and the dry-run isolation. It never contacts Atlas or BigQuery.
 
 ## OLAP Monitoring Dashboard
 
