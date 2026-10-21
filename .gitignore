@@ -1,0 +1,14 @@
+.env
+__pycache__/
+*.pyc
+.venv/
+env/
+data_lake/**/*.parquet
+data_lake/**/*.json
+data_lake/**/*.tmp
+data_lake/streaming/
+data_lake/raw/cdc/
+dashboard_output/
+data_lake/streaming/
+data_lake/raw/cdc/
+.env.terraform

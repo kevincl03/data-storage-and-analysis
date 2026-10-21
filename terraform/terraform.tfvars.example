@@ -1,0 +1,26 @@
+# ==============================================================================
+# Hyperflix - MongoDB Atlas Terraform Variables Example
+# ==============================================================================
+# Duplicate this file as terraform.tfvars and provide your Atlas credentials.
+# NEVER commit terraform.tfvars to version control.
+# ==============================================================================
+
+# MongoDB Atlas Programmatic API Credentials (Required)
+atlas_org_id      = "65a12345b67c890123456789"
+atlas_public_key  = "your-atlas-public-key"
+atlas_private_key = "your-atlas-private-key-uuid"
+
+# Hyperflix Platform Settings
+project_name      = "hyperflix-platform"
+cluster_name      = "hyperflix-cluster"
+cluster_tier      = "M0"
+cloud_provider    = "AWS"
+region_name       = "US_EAST_1"
+database_name     = "hyperflix_db"
+
+# Security & Access Control
+app_username        = "hyperflix_app"
+app_password        = "" # Leave empty to auto-generate a secure random 24-character password
+reader_username     = "data_lake_reader"
+reader_password     = "" # Leave empty to auto-generate a secure random 24-character password
+allowed_cidr_blocks = ["0.0.0.0/0"]
