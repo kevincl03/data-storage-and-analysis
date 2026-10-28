@@ -16,3 +16,4 @@ data_lake/raw/cdc/
 credenciales_hyperflix_bigquery.json
 *_bigquery_credentials.json
 service_account*.json
+.atl/
