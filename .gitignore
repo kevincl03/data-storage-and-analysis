@@ -1,19 +1,55 @@
+# ==========================================
+# Entorno y credenciales
+# ==========================================
 .env
+.env.*
+!.env.example
+.env.terraform
+
+# Credenciales de Google Cloud / BigQuery
+credenciales_hyperflix_bigquery.json
+*_bigquery_credentials.json
+service_account*.json
+
+# ==========================================
+# Terraform
+# ==========================================
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+*.tfvars.json
+tfplan
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+!*.tfvars.example
+
+# ==========================================
+# Python y entornos virtuales
+# ==========================================
 __pycache__/
 *.pyc
 .venv/
 env/
+
+# ==========================================
+# Data Lake y salidas generadas
+# ==========================================
 data_lake/**/*.parquet
 data_lake/**/*.json
 data_lake/**/*.tmp
 data_lake/streaming/
 data_lake/raw/cdc/
 dashboard_output/
-data_lake/streaming/
-data_lake/raw/cdc/
-.env.terraform
-# Credenciales de Google Cloud / BigQuery (contienen private key)
-credenciales_hyperflix_bigquery.json
-*_bigquery_credentials.json
-service_account*.json
+
+# ==========================================
+# Herramientas y cache local
+# ==========================================
 .atl/
+.freebuff/
