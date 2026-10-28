@@ -1,0 +1,105 @@
+name: Hyperflix DataOps & CI/CD Pipeline
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ========================================================
+  # Job 1: Validación y Pruebas de Datos / ETL (Python DataOps)
+  # ========================================================
+  hyperflix-data-ci:
+    name: Hyperflix DataOps & Test Pipeline
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Hyperflix Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17 (Temurin) for PySpark Validation
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Set up Python 3.12 Environment
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install Hyperflix Python Dependencies
+        run: |
+          echo "==> Actualizando pip e instalando dependencias de Hyperflix..."
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Validate Python Syntax & Bytecode Compilation
+        run: |
+          echo "==> Verificando sintaxis de scripts y pipelines de Hyperflix..."
+          python -m compileall -q .
+          python -m py_compile data_lake.py conexion.py streaming_ingesta.py scripts/etl_mongo_to_bigquery.py
+
+      - name: Execute Hyperflix Unit Test Suite
+        run: |
+          echo "==> Ejecutando suite completa de pruebas unitarias de Hyperflix..."
+          python -m unittest discover -s tests -v
+
+  # ========================================================
+  # Job 2: Validación de Infraestructura como Código (Terraform)
+  # ========================================================
+  hyperflix-iac-ci:
+    name: Hyperflix Infrastructure as Code (Terraform)
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: terraform
+
+    steps:
+      - name: Checkout Hyperflix Repository
+        uses: actions/checkout@v4
+
+      - name: Setup HashiCorp Terraform CLI
+        uses: actions/setup-terraform@v3
+        with:
+          terraform_version: '1.5.7'
+
+      - name: Validate Terraform Formatting (fmt)
+        run: |
+          echo "==> Validando formato de código Terraform de Hyperflix..."
+          terraform fmt -check
+
+      - name: Initialize Terraform Modules & Providers (init)
+        run: |
+          echo "==> Inicializando providers de Terraform para Hyperflix (MongoDB Atlas)..."
+          terraform init -backend=false
+
+      - name: Validate Terraform Syntax & Configuration (validate)
+        run: |
+          echo "==> Validando sintaxis y configuración HCL de Hyperflix..."
+          terraform validate
+
+      - name: Generate Speculative Terraform Plan (plan)
+        env:
+          TF_VAR_atlas_org_id: ${{ secrets.ATLAS_ORG_ID || 'dummy_org_id_for_ci_validation' }}
+          TF_VAR_atlas_public_key: ${{ secrets.ATLAS_PUBLIC_KEY || 'dummy_pub_key_for_ci' }}
+          TF_VAR_atlas_private_key: ${{ secrets.ATLAS_PRIVATE_KEY || 'dummy_priv_key_for_ci' }}
+        run: |
+          echo "==> Generando plan de ejecución de infraestructura para Hyperflix..."
+          if [ -n "${{ secrets.ATLAS_PUBLIC_KEY }}" ]; then
+            echo "Credenciales de MongoDB Atlas detectadas en GitHub Secrets. Ejecutando plan real..."
+            terraform plan -input=false
+          else
+            echo "Sin credenciales reales en GitHub Secrets. Ejecutando plan especulativo con variables mock..."
+            terraform plan -input=false || echo "::warning::Plan especulativo finalizado. Para validar contra la API real de MongoDB Atlas, configure los secretos ATLAS_ORG_ID, ATLAS_PUBLIC_KEY y ATLAS_PRIVATE_KEY en GitHub Actions."
+          fi
